@@ -1,18 +1,19 @@
 # Progress Tracker
 
 ## Current Phase
-- Phase 1: Core Mathematical Calculation Engine
+- Phase 2: Interactive Geometry Visualization
 
 ## Current Goal
-- Implement the core slice geometry and Factor of Safety calculation logic in `lib/slope-math.ts`.
+- Build an interactive dashboard for inspecting slope cross-section geometry and trial slip surfaces.
 
 ## Completed Tasks
 - [x] Defined project scope and geotechnical requirements for SlopeFoS.
 - [x] Established project architecture and context files.
+- [x] Added controlled slope inputs, circular trial geometry, a prop-driven scaled SVG visualizer with annotated slip-circle geometry and alternating slice outlines, and a geometric slice breakdown.
+- [x] Configured Tailwind PostCSS processing and pinned a CommonJS-compatible dependency for the current Node runtime.
 
 ## In Progress
-- [ ] Core math module (`lib/slope-math.ts`).
+- [ ] Material-strength inputs and factor-of-safety calculation engine.
 
 ## Next Up
-- [ ] Build the interactive input form and parameter controls.
-- [ ] Implement the SVG/Canvas slope cross-section renderer.
+- [ ] Add geotechnical material parameters and implement a validated Limit Equilibrium Method.
