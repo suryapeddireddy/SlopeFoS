@@ -32,11 +32,36 @@ export interface SlopeGeometry {
   slices: SlopeSlice[];
 }
 
+export interface StabilityParameters {
+  slices: readonly SlopeSlice[];
+  cohesion: number;
+  frictionAngle: number;
+  unitWeight: number;
+  porePressure: number;
+}
+
+export interface StabilitySlice extends SlopeSlice {
+  weight: number;
+  baseNormalForce: number;
+  drivingForce: number;
+  resistingForce: number;
+}
+
+export interface StabilityResult {
+  factorOfSafety: number;
+  totalDrivingForce: number;
+  totalResistingForce: number;
+  iterations: number;
+  slices: StabilitySlice[];
+}
+
 export type SlopeParams = SlopeParameters;
 export type CalculationResult = SlopeGeometry;
 
 const SLICE_COUNT = 8;
 const ARC_POINT_COUNT = 96;
+const BISHOP_MAX_ITERATIONS = 1000;
+const BISHOP_TOLERANCE = 1e-8;
 
 function surfaceElevation(x: number, height: number, faceRun: number): number {
   return x < faceRun ? (x / faceRun) * height : height;
@@ -137,4 +162,219 @@ export function calculateSlopeGeometry(
   });
 
   return { faceRun, crestEnd, center, radius, slipArc, slices };
+}
+
+function validateStabilityParameters(parameters: StabilityParameters): void {
+  const { slices, cohesion, frictionAngle, unitWeight, porePressure } =
+    parameters;
+  if (
+    !Number.isFinite(cohesion) ||
+    cohesion < 0 ||
+    !Number.isFinite(frictionAngle) ||
+    frictionAngle < 0 ||
+    frictionAngle >= 90 ||
+    !Number.isFinite(unitWeight) ||
+    unitWeight <= 0 ||
+    !Number.isFinite(porePressure) ||
+    porePressure < 0 ||
+    slices.length === 0
+  ) {
+    throw new RangeError("Material parameters and slices must be valid.");
+  }
+
+  for (const slice of slices) {
+    if (
+      !Number.isFinite(slice.area) ||
+      slice.area < 0 ||
+      !Number.isFinite(slice.width) ||
+      slice.width <= 0 ||
+      !Number.isFinite(slice.baseAngle)
+    ) {
+      throw new RangeError("Slice geometry must contain valid dimensions.");
+    }
+  }
+}
+
+function getSliceForces(
+  parameters: StabilityParameters,
+): Array<{
+  slice: SlopeSlice;
+  weight: number;
+  baseLength: number;
+  baseAngleRadians: number;
+  effectiveNormalForce: number;
+  drivingForce: number;
+}> {
+  return parameters.slices.map((slice) => {
+    const baseAngleRadians = (slice.baseAngle * Math.PI) / 180;
+    const weight = slice.area * parameters.unitWeight;
+    const baseLength = slice.width / Math.cos(baseAngleRadians);
+    const effectiveNormalForce =
+      weight * Math.cos(baseAngleRadians) -
+      parameters.porePressure * baseLength;
+
+    if (effectiveNormalForce < 0) {
+      throw new RangeError(
+        "Pore pressure exceeds the slice base normal force.",
+      );
+    }
+
+    return {
+      slice,
+      weight,
+      baseLength,
+      baseAngleRadians,
+      effectiveNormalForce,
+      drivingForce: weight * Math.sin(baseAngleRadians),
+    };
+  });
+}
+
+function getDrivingForce(
+  sliceForces: ReturnType<typeof getSliceForces>,
+): number {
+  const drivingForce = sliceForces.reduce(
+    (total, slice) => total + slice.drivingForce,
+    0,
+  );
+  if (!Number.isFinite(drivingForce) || drivingForce <= 0) {
+    throw new RangeError("The slices must produce a positive driving force.");
+  }
+  return drivingForce;
+}
+
+export function calculateFelleniusFoS(
+  parameters: StabilityParameters,
+): StabilityResult {
+  validateStabilityParameters(parameters);
+  const sliceForces = getSliceForces(parameters);
+  const totalDrivingForce = getDrivingForce(sliceForces);
+  const frictionRadians = (parameters.frictionAngle * Math.PI) / 180;
+  const slices = sliceForces.map(
+    ({ slice, weight, baseLength, effectiveNormalForce, drivingForce }) => {
+      const resistingForce =
+        parameters.cohesion * baseLength +
+        effectiveNormalForce * Math.tan(frictionRadians);
+
+      return {
+        ...slice,
+        weight,
+        baseNormalForce: effectiveNormalForce,
+        drivingForce,
+        resistingForce,
+      };
+    },
+  );
+  const totalResistingForce = slices.reduce(
+    (total, slice) => total + slice.resistingForce,
+    0,
+  );
+  const factorOfSafety = totalResistingForce / totalDrivingForce;
+  if (!Number.isFinite(factorOfSafety) || factorOfSafety < 0) {
+    throw new RangeError("The Fellenius factor of safety is invalid.");
+  }
+
+  return {
+    factorOfSafety,
+    totalDrivingForce,
+    totalResistingForce,
+    iterations: 0,
+    slices,
+  };
+}
+
+export function calculateBishopsFoS(
+  parameters: StabilityParameters,
+): StabilityResult {
+  validateStabilityParameters(parameters);
+  const sliceForces = getSliceForces(parameters);
+  const totalDrivingForce = getDrivingForce(sliceForces);
+  const tangentFriction = Math.tan(
+    (parameters.frictionAngle * Math.PI) / 180,
+  );
+  const felleniusResult = calculateFelleniusFoS(parameters);
+  if (felleniusResult.factorOfSafety === 0) {
+    return felleniusResult;
+  }
+  let factorOfSafety = felleniusResult.factorOfSafety;
+  let iterations = 0;
+  let converged = false;
+
+  for (iterations = 1; iterations <= BISHOP_MAX_ITERATIONS; iterations += 1) {
+    const totalResistingForce = sliceForces.reduce((total, sliceForce) => {
+      const mAlpha =
+        Math.cos(sliceForce.baseAngleRadians) +
+        (Math.sin(sliceForce.baseAngleRadians) * tangentFriction) /
+          factorOfSafety;
+      if (!Number.isFinite(mAlpha) || mAlpha <= 0) {
+        throw new RangeError(
+          "Bishop's method produced a non-positive slice equilibrium factor.",
+        );
+      }
+
+      const effectiveWeight =
+        sliceForce.weight -
+        parameters.porePressure * sliceForce.slice.width;
+      return (
+        total +
+        (parameters.cohesion * sliceForce.slice.width +
+          effectiveWeight * tangentFriction) /
+          mAlpha
+      );
+    }, 0);
+    const nextFactorOfSafety = totalResistingForce / totalDrivingForce;
+    if (!Number.isFinite(nextFactorOfSafety) || nextFactorOfSafety <= 0) {
+      throw new RangeError("Bishop's factor of safety is not positive.");
+    }
+    if (
+      Math.abs(nextFactorOfSafety - factorOfSafety) <=
+      BISHOP_TOLERANCE * Math.max(1, Math.abs(nextFactorOfSafety))
+    ) {
+      factorOfSafety = nextFactorOfSafety;
+      converged = true;
+      break;
+    }
+    factorOfSafety = nextFactorOfSafety;
+  }
+
+  if (!converged) {
+    throw new RangeError(
+      "Bishop's method did not converge for the supplied parameters.",
+    );
+  }
+
+  const slices = sliceForces.map(
+    ({ slice, weight, baseAngleRadians, drivingForce }) => {
+      const mAlpha =
+        Math.cos(baseAngleRadians) +
+        (Math.sin(baseAngleRadians) * tangentFriction) / factorOfSafety;
+      const effectiveWeight =
+        weight - parameters.porePressure * slice.width;
+      const baseNormalForce = effectiveWeight / mAlpha;
+      const resistingForce =
+        (parameters.cohesion * slice.width +
+          effectiveWeight * tangentFriction) /
+        mAlpha;
+
+      return {
+        ...slice,
+        weight,
+        baseNormalForce,
+        drivingForce,
+        resistingForce,
+      };
+    },
+  );
+  const totalResistingForce = slices.reduce(
+    (total, slice) => total + slice.resistingForce,
+    0,
+  );
+
+  return {
+    factorOfSafety,
+    totalDrivingForce,
+    totalResistingForce,
+    iterations,
+    slices,
+  };
 }

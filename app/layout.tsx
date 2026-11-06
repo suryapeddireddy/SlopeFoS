@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SlopeFoS | Cross-Section Visualizer",
+  title: "SlopeFoS | Slope Stability Analysis",
   description:
-    "Explore scaled slope cross-sections, trial slip surfaces, and vertical slice geometry.",
+    "Compare slope stability using the Ordinary Method of Slices and Bishop's Simplified Method.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
