@@ -9,6 +9,11 @@ export interface Point {
   y: number;
 }
 
+export interface TrialCircleParameters {
+  center: Point;
+  radius: number;
+}
+
 export interface SlopeSlice {
   index: number;
   xStart: number;
@@ -69,6 +74,7 @@ function surfaceElevation(x: number, height: number, faceRun: number): number {
 
 export function calculateSlopeGeometry(
   parameters: SlopeParameters,
+  trialCircle?: TrialCircleParameters,
 ): SlopeGeometry {
   const { height, faceAngle, crestWidth } = parameters;
   if (
@@ -91,22 +97,40 @@ export function calculateSlopeGeometry(
     throw new RangeError("Slope dimensions exceed the supported numeric range.");
   }
 
-  const centerX = Math.min(
+  const defaultCenterX = Math.min(
     -height * 0.5,
     (crestEnd * crestEnd - height * height) / (2 * crestEnd) -
       height * 0.05,
   );
-  const centerY =
-    (crestEnd * crestEnd - 2 * crestEnd * centerX + height * height) /
-    (2 * height);
-  const center = { x: centerX, y: centerY };
-  const radius = Math.hypot(centerX, centerY);
+  const center = trialCircle?.center ?? {
+    x: defaultCenterX,
+    y:
+      (crestEnd * crestEnd -
+        2 * crestEnd * defaultCenterX +
+        height * height) /
+      (2 * height),
+  };
+  const centerX = center.x;
+  const centerY = center.y;
+  const radius = trialCircle?.radius ?? Math.hypot(centerX, centerY);
   if (
+    !Number.isFinite(centerX) ||
     !Number.isFinite(centerY) ||
     !Number.isFinite(radius) ||
+    radius <= 0 ||
     !Number.isFinite(radius * radius)
   ) {
     throw new RangeError("Slope dimensions exceed the supported numeric range.");
+  }
+  const circleTolerance = 1e-7 * Math.max(1, height, crestEnd, radius);
+  if (
+    Math.abs(Math.hypot(centerX, centerY) - radius) > circleTolerance ||
+    Math.abs(Math.hypot(crestEnd - centerX, height - centerY) - radius) >
+      circleTolerance
+  ) {
+    throw new RangeError(
+      "The trial circle must pass through the slope toe and crest.",
+    );
   }
 
   const startAngle = Math.atan2(-centerY, -centerX);

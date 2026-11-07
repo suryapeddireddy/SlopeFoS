@@ -13,7 +13,19 @@ import {
   type StabilityParameters,
   type StabilityResult,
   type SlopeParameters,
+  type TrialCircleParameters,
 } from "@/lib/slope-math";
+import { generateSlopeReport } from "@/lib/export-report";
+import {
+  REFERENCE_CASES,
+  type ReferenceCalculationMethod,
+} from "@/lib/reference-cases";
+import {
+  DESIGN_CRITERIA,
+  evaluateDesignCompliance,
+  isDesignCriterionId,
+  type DesignCriterionId,
+} from "@/lib/design-criteria";
 
 const INITIAL_PARAMETERS: SlopeParameters = {
   height: 20,
@@ -22,7 +34,7 @@ const INITIAL_PARAMETERS: SlopeParameters = {
 };
 
 type MaterialParameters = Omit<StabilityParameters, "slices">;
-type CalculationMethod = "fellenius" | "bishop";
+type CalculationMethod = ReferenceCalculationMethod;
 
 const INITIAL_MATERIAL: MaterialParameters = {
   cohesion: 10,
@@ -62,6 +74,13 @@ export default function Home() {
     useState<SlopeParameters>(INITIAL_PARAMETERS);
   const [material, setMaterial] =
     useState<MaterialParameters>(INITIAL_MATERIAL);
+  const [selectedReferenceCaseId, setSelectedReferenceCaseId] = useState<
+    string | null
+  >(null);
+  const [selectedDesignCriterionId, setSelectedDesignCriterionId] =
+    useState<DesignCriterionId>("active-mining-bench");
+  const [trialCircle, setTrialCircle] =
+    useState<TrialCircleParameters | null>(null);
   const [method, setMethod] = useState<CalculationMethod>("fellenius");
   const [criticalCircle, setCriticalCircle] =
     useState<CriticalSlipSearchResult | null>(null);
@@ -103,7 +122,7 @@ export default function Home() {
       return null;
     }
 
-    const geometry = calculateSlopeGeometry(parameters);
+    const geometry = calculateSlopeGeometry(parameters, trialCircle ?? undefined);
     const stabilityParameters: StabilityParameters = {
       ...material,
       slices: geometry.slices,
@@ -126,7 +145,7 @@ export default function Home() {
       }
       throw error;
     }
-  }, [material, parameters, validationMessage]);
+  }, [material, parameters, trialCircle, validationMessage]);
   const displayedAnalysis = useMemo(() => {
     if (!criticalCircle) {
       return analysis;
@@ -160,6 +179,16 @@ export default function Home() {
     method === "bishop"
       ? (displayedAnalysis?.bishop ?? null)
       : (displayedAnalysis?.fellenius ?? null);
+  const selectedDesignCriterion = DESIGN_CRITERIA.find(
+    (criterion) => criterion.id === selectedDesignCriterionId,
+  );
+  const designCompliance =
+    selectedResult && selectedDesignCriterion
+      ? evaluateDesignCompliance(
+          selectedResult.factorOfSafety,
+          selectedDesignCriterion,
+        )
+      : null;
   const selectedStatus = selectedResult
     ? getStabilityStatus(selectedResult.factorOfSafety)
     : null;
@@ -171,6 +200,17 @@ export default function Home() {
         { method: "Bishop's Simplified", result: displayedAnalysis.bishop },
       ]
     : [];
+  const selectedReferenceCase =
+    REFERENCE_CASES.find(
+      (referenceCase) => referenceCase.id === selectedReferenceCaseId,
+    ) ?? null;
+  const selectedReferenceTarget =
+    selectedReferenceCase?.targets[method] ?? null;
+  const isWithinReferenceTarget =
+    selectedResult !== null &&
+    selectedReferenceTarget !== null &&
+    selectedResult.factorOfSafety >= selectedReferenceTarget.minimum &&
+    selectedResult.factorOfSafety <= selectedReferenceTarget.maximum;
   const cancelSearch = () => {
     searchController.current?.abort();
     searchController.current = null;
@@ -180,13 +220,37 @@ export default function Home() {
     cancelSearch();
     setCriticalCircle(null);
     setSearchError(null);
+    setSelectedReferenceCaseId(null);
+    setTrialCircle(null);
     setParameters((current) => ({ ...current, [key]: Number(value) }));
   };
   const updateMaterial = (key: keyof MaterialParameters, value: string) => {
     cancelSearch();
     setCriticalCircle(null);
     setSearchError(null);
+    setSelectedReferenceCaseId(null);
+    setTrialCircle(null);
     setMaterial((current) => ({ ...current, [key]: Number(value) }));
+  };
+  const loadReferenceCase = (referenceCaseId: string) => {
+    cancelSearch();
+    setCriticalCircle(null);
+    setSearchError(null);
+    const referenceCase = REFERENCE_CASES.find(
+      (item) => item.id === referenceCaseId,
+    );
+    setSelectedReferenceCaseId(referenceCase?.id ?? null);
+    if (!referenceCase) {
+      setTrialCircle(null);
+      return;
+    }
+
+    setParameters(referenceCase.slope);
+    setMaterial({
+      ...referenceCase.material,
+      porePressure: referenceCase.waterTable.basePorePressure,
+    });
+    setTrialCircle(referenceCase.trialCircle);
   };
   const runCriticalSearch = async () => {
     if (validationMessage || !analysis?.geometry) {
@@ -194,6 +258,8 @@ export default function Home() {
     }
 
     cancelSearch();
+    setSelectedReferenceCaseId(null);
+    setTrialCircle(null);
     const controller = new AbortController();
     searchController.current = controller;
     setCriticalCircle(null);
@@ -223,6 +289,41 @@ export default function Home() {
         setIsSearching(false);
       }
     }
+  };
+  const downloadEngineeringReport = () => {
+    if (!geometry || !selectedResult) {
+      return;
+    }
+
+    const report = generateSlopeReport(
+      {
+        slope: parameters,
+        material,
+        geometry,
+        ...(criticalCircle
+          ? {
+              criticalSearch: {
+                method: criticalCircle.method,
+                testedCircles: criticalCircle.testedCircles,
+              },
+            }
+          : {}),
+      },
+      selectedResult,
+      method,
+    );
+    const reportBlob = new Blob([report], {
+      type: "text/plain;charset=utf-8",
+    });
+    const downloadUrl = URL.createObjectURL(reportBlob);
+    const downloadLink = document.createElement("a");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    downloadLink.href = downloadUrl;
+    downloadLink.download = `slopefos-engineering-report-${timestamp}.txt`;
+    document.body.append(downloadLink);
+    downloadLink.click();
+    downloadLink.remove();
+    window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
   };
 
   return (
@@ -265,6 +366,88 @@ export default function Home() {
 
         <div className="grid items-start gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
           <aside className="rounded-xl border border-white/10 bg-[#0B0E14] p-5">
+            <div className="mb-5 border-b border-white/10 pb-5">
+              <label className="block">
+                <span className="mb-2 block text-xs font-medium text-slate-300">
+                  Load Reference Case
+                </span>
+                <select
+                  aria-label="Load Reference Case"
+                  className="w-full rounded-lg border border-white/10 bg-[#080B10] px-3 py-2.5 text-sm text-slate-100 outline-none transition focus:border-cyan-300/50 focus:ring-2 focus:ring-cyan-300/10"
+                  onChange={(event) =>
+                    loadReferenceCase(event.currentTarget.value)
+                  }
+                  value={selectedReferenceCaseId ?? ""}
+                >
+                  <option value="">Custom analysis</option>
+                  {REFERENCE_CASES.map((referenceCase) => (
+                    <option key={referenceCase.id} value={referenceCase.id}>
+                      {referenceCase.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedReferenceCase && (
+                <div className="mt-3 space-y-1.5 text-[11px] leading-5 text-slate-400">
+                  <p>{selectedReferenceCase.description}</p>
+                  <p>{selectedReferenceCase.waterTable.description}</p>
+                  <p className="font-mono text-slate-500">
+                    Trial circle · C (
+                    {formatNumber(selectedReferenceCase.trialCircle.center.x)},
+                    {" "}
+                    {formatNumber(selectedReferenceCase.trialCircle.center.y)}
+                    ) m · R{" "}
+                    {formatNumber(selectedReferenceCase.trialCircle.radius)} m
+                  </p>
+                </div>
+              )}
+              <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                Water table is represented by uniform base pore pressure in
+                this calculation model.
+              </p>
+            </div>
+            <div className="mb-5 border-b border-white/10 pb-5">
+              <label className="block">
+                <span className="mb-2 block text-xs font-medium text-slate-300">
+                  Design criteria
+                </span>
+                <select
+                  aria-label="Design criteria"
+                  className="w-full rounded-lg border border-white/10 bg-[#080B10] px-3 py-2.5 text-sm text-slate-100 outline-none transition focus:border-cyan-300/50 focus:ring-2 focus:ring-cyan-300/10"
+                  onChange={(event) => {
+                    const criterionId = event.currentTarget.value;
+                    if (isDesignCriterionId(criterionId)) {
+                      setSelectedDesignCriterionId(criterionId);
+                    }
+                  }}
+                  value={selectedDesignCriterionId}
+                >
+                  {DESIGN_CRITERIA.map((criterion) => (
+                    <option key={criterion.id} value={criterion.id}>
+                      {criterion.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedDesignCriterion && (
+                <div className="mt-2 space-y-1 text-[10px] leading-4 text-slate-500">
+                  <p>
+                    Minimum FoS{" "}
+                    <span className="font-mono text-slate-300">
+                      {formatNumber(
+                        selectedDesignCriterion.minimumFactorOfSafety,
+                        2,
+                      )}
+                    </span>{" "}
+                    · {selectedDesignCriterion.consequenceClass}
+                  </p>
+                  <p>
+                    {selectedDesignCriterion.basis} Indicative static criteria
+                    only; confirm the governing project design basis.
+                  </p>
+                </div>
+              )}
+            </div>
             <div className="mb-5">
               <h2 className="text-sm font-semibold">Slope parameters</h2>
               <p className="mt-1 text-xs text-slate-500">
@@ -541,12 +724,104 @@ export default function Home() {
                           <p className="mt-1 text-xs text-slate-500">
                             Factor of safety
                           </p>
+                          {designCompliance && selectedDesignCriterion && (
+                            <div
+                              aria-label="Design criteria compliance"
+                              className={`mt-3 rounded-lg border px-3 py-2 ${
+                                designCompliance.status === "meets-criterion"
+                                  ? "border-emerald-400/25 bg-emerald-400/10"
+                                  : "border-rose-400/25 bg-rose-400/10"
+                              }`}
+                              role="status"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span
+                                  className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                                    designCompliance.status ===
+                                    "meets-criterion"
+                                      ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+                                      : "border-rose-400/25 bg-rose-400/10 text-rose-200"
+                                  }`}
+                                >
+                                  {designCompliance.status ===
+                                  "meets-criterion"
+                                    ? "Meets design criterion"
+                                    : "Below design criterion"}
+                                </span>
+                                <span className="font-mono text-[11px] text-slate-300">
+                                  Required ≥{" "}
+                                  {formatNumber(
+                                    designCompliance.minimumFactorOfSafety,
+                                    2,
+                                  )}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-[11px] text-slate-400">
+                                {selectedDesignCriterion.label} ·{" "}
+                                {selectedMethodName} · margin{" "}
+                                {designCompliance.margin >= 0 ? "+" : ""}
+                                {formatNumber(designCompliance.margin, 3)}
+                              </p>
+                            </div>
+                          )}
+                          {selectedReferenceCase &&
+                            selectedReferenceTarget && (
+                              <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.025] px-3 py-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                                    Verification Benchmark
+                                  </span>
+                                  <span
+                                    className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+                                      isWithinReferenceTarget
+                                        ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+                                        : "border-amber-400/25 bg-amber-400/10 text-amber-200"
+                                    }`}
+                                  >
+                                    {isWithinReferenceTarget
+                                      ? "Within target"
+                                      : "Outside target"}
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-[11px] text-slate-400">
+                                  Reference{" "}
+                                  {formatNumber(selectedReferenceTarget.value, 3)}
+                                  {" · range "}
+                                  {formatNumber(
+                                    selectedReferenceTarget.minimum,
+                                    3,
+                                  )}
+                                  –{formatNumber(
+                                    selectedReferenceTarget.maximum,
+                                    3,
+                                  )}
+                                  {" · Δ "}
+                                  {formatNumber(
+                                    Math.abs(
+                                      selectedResult.factorOfSafety -
+                                        selectedReferenceTarget.value,
+                                    ),
+                                    3,
+                                  )}
+                                </p>
+                              </div>
+                            )}
                         </div>
-                        <span
-                          className={`rounded-full border px-3 py-1 text-xs font-medium ${selectedStatus.className}`}
-                        >
-                          {selectedStatus.label}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100 transition hover:border-cyan-200/50 hover:bg-cyan-300/15 disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={!selectedResult}
+                            onClick={downloadEngineeringReport}
+                            type="button"
+                          >
+                            Download Engineering Report
+                          </button>
+                          <span
+                            className={`rounded-full border px-3 py-1 text-xs font-medium ${selectedStatus.className}`}
+                          >
+                            {selectedStatus.label}
+                          </span>
+                        </div>
                       </div>
                       <dl className="mt-5 grid grid-cols-2 gap-3 border-t border-white/10 pt-4 text-xs">
                         <div>
