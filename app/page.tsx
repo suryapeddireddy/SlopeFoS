@@ -1,7 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import SlopeVisualizer from "@/components/slope-visualizer";
+import {
+  findCriticalSlipCircle,
+  type CriticalSlipSearchResult,
+} from "@/lib/optimizer";
 import {
   calculateBishopsFoS,
   calculateFelleniusFoS,
@@ -59,6 +63,11 @@ export default function Home() {
   const [material, setMaterial] =
     useState<MaterialParameters>(INITIAL_MATERIAL);
   const [method, setMethod] = useState<CalculationMethod>("fellenius");
+  const [criticalCircle, setCriticalCircle] =
+    useState<CriticalSlipSearchResult | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const searchController = useRef<AbortController | null>(null);
   const validationMessage =
     !Number.isFinite(parameters.height) ||
       parameters.height < 1 ||
@@ -118,27 +127,102 @@ export default function Home() {
       throw error;
     }
   }, [material, parameters, validationMessage]);
-  const geometry = analysis?.geometry ?? null;
+  const displayedAnalysis = useMemo(() => {
+    if (!criticalCircle) {
+      return analysis;
+    }
+
+    const stabilityParameters: StabilityParameters = {
+      ...material,
+      slices: criticalCircle.geometry.slices,
+    };
+    try {
+      return {
+        geometry: criticalCircle.geometry,
+        fellenius: calculateFelleniusFoS(stabilityParameters),
+        bishop: calculateBishopsFoS(stabilityParameters),
+        calculationError: null,
+      };
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return {
+          geometry: criticalCircle.geometry,
+          fellenius: null,
+          bishop: null,
+          calculationError: error.message,
+        };
+      }
+      throw error;
+    }
+  }, [analysis, criticalCircle, material]);
+  const geometry = displayedAnalysis?.geometry ?? null;
   const selectedResult: StabilityResult | null =
     method === "bishop"
-      ? (analysis?.bishop ?? null)
-      : (analysis?.fellenius ?? null);
+      ? (displayedAnalysis?.bishop ?? null)
+      : (displayedAnalysis?.fellenius ?? null);
   const selectedStatus = selectedResult
     ? getStabilityStatus(selectedResult.factorOfSafety)
     : null;
   const selectedMethodName =
     method === "bishop" ? "Bishop's Simplified" : "Fellenius";
-  const comparisonResults = analysis
+  const comparisonResults = displayedAnalysis
     ? [
-        { method: "Fellenius", result: analysis.fellenius },
-        { method: "Bishop's Simplified", result: analysis.bishop },
+        { method: "Fellenius", result: displayedAnalysis.fellenius },
+        { method: "Bishop's Simplified", result: displayedAnalysis.bishop },
       ]
     : [];
+  const cancelSearch = () => {
+    searchController.current?.abort();
+    searchController.current = null;
+    setIsSearching(false);
+  };
   const updateParameter = (key: keyof SlopeParameters, value: string) => {
+    cancelSearch();
+    setCriticalCircle(null);
+    setSearchError(null);
     setParameters((current) => ({ ...current, [key]: Number(value) }));
   };
   const updateMaterial = (key: keyof MaterialParameters, value: string) => {
+    cancelSearch();
+    setCriticalCircle(null);
+    setSearchError(null);
     setMaterial((current) => ({ ...current, [key]: Number(value) }));
+  };
+  const runCriticalSearch = async () => {
+    if (validationMessage || !analysis?.geometry) {
+      return;
+    }
+
+    cancelSearch();
+    const controller = new AbortController();
+    searchController.current = controller;
+    setCriticalCircle(null);
+    setSearchError(null);
+    setIsSearching(true);
+    try {
+      const result = await findCriticalSlipCircle({
+        slope: parameters,
+        material,
+        method,
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted) {
+        setCriticalCircle(result);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setSearchError(
+          error instanceof Error
+            ? error.message
+            : "Critical slip circle search failed.",
+        );
+      }
+    } finally {
+      if (searchController.current === controller) {
+        searchController.current = null;
+        setIsSearching(false);
+      }
+    }
   };
 
   return (
@@ -333,7 +417,10 @@ export default function Home() {
                       ? "border-cyan-300/40 bg-cyan-300/10 text-cyan-100"
                       : "border-white/10 bg-[#080B10] text-slate-400 hover:text-slate-200"
                   }`}
-                  onClick={() => setMethod("fellenius")}
+                  onClick={() => {
+                    cancelSearch();
+                    setMethod("fellenius");
+                  }}
                   type="button"
                 >
                   Fellenius
@@ -345,12 +432,46 @@ export default function Home() {
                       ? "border-cyan-300/40 bg-cyan-300/10 text-cyan-100"
                       : "border-white/10 bg-[#080B10] text-slate-400 hover:text-slate-200"
                   }`}
-                  onClick={() => setMethod("bishop")}
+                  onClick={() => {
+                    cancelSearch();
+                    setMethod("bishop");
+                  }}
                   type="button"
                 >
                   Bishop&apos;s
                 </button>
               </div>
+            </div>
+
+            <div className="mt-4">
+              <button
+                className="w-full rounded-lg border border-rose-400/40 bg-rose-500/10 px-3 py-2.5 text-xs font-semibold text-rose-200 transition hover:border-rose-300/60 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!geometry || Boolean(validationMessage) || isSearching}
+                onClick={() => void runCriticalSearch()}
+                type="button"
+              >
+                {isSearching
+                  ? "Searching for critical circle..."
+                  : "Run Critical Slip Circle Search"}
+              </button>
+              {criticalCircle && (
+                <p className="mt-2 text-xs leading-5 text-rose-200" role="status">
+                  {criticalCircle.method === "bishop"
+                    ? "Bishop's"
+                    : "Fellenius"}{" "}
+                  critical FoS{" "}
+                  {formatNumber(criticalCircle.stability.factorOfSafety, 3)} ·{" "}
+                  {criticalCircle.testedCircles.toLocaleString()} circles tested
+                </p>
+              )}
+              {searchError && (
+                <p
+                  className="mt-2 text-xs leading-5 text-rose-200"
+                  role="alert"
+                >
+                  {searchError}
+                </p>
+              )}
             </div>
 
             {validationMessage && (
@@ -361,12 +482,12 @@ export default function Home() {
                 {validationMessage}
               </p>
             )}
-            {analysis?.calculationError && (
+            {displayedAnalysis?.calculationError && (
               <p
                 className="mt-4 rounded-lg border border-rose-400/20 bg-rose-400/5 px-3 py-2 text-xs leading-5 text-rose-200"
                 role="alert"
               >
-                {analysis.calculationError}
+                {displayedAnalysis.calculationError}
               </p>
             )}
 
@@ -400,7 +521,11 @@ export default function Home() {
           <section aria-label="Slope visualization and slices" className="min-w-0">
             {geometry ? (
               <>
-                <SlopeVisualizer params={parameters} result={geometry} />
+                <SlopeVisualizer
+                  isCritical={criticalCircle !== null}
+                  params={parameters}
+                  result={geometry}
+                />
 
                 {selectedResult && selectedStatus ? (
                   <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">

@@ -12,6 +12,7 @@
 - [x] Added controlled slope inputs, circular trial geometry, a prop-driven scaled SVG visualizer with annotated slip-circle geometry and alternating slice outlines, and a geometric slice breakdown.
 - [x] Configured Tailwind PostCSS processing and pinned a CommonJS-compatible dependency for the current Node runtime.
 - [x] Added typed material and pore-pressure inputs, Fellenius and iterative Bishop's Simplified FoS calculations, method comparison metrics, and selected-method slice force breakdowns.
+- [x] Added an asynchronous grid search for the critical slip circle, integrated the dashboard action and optimized-circle results, and highlighted the critical failure envelope in crimson.
 
 ## In Progress
 - [ ] Validate limit-equilibrium outputs against project-specific reference cases.

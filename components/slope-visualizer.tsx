@@ -5,6 +5,7 @@ import type { CalculationResult, SlopeParams } from "@/lib/slope-math";
 interface SlopeVisualizerProps {
   params: SlopeParams;
   result: CalculationResult;
+  isCritical?: boolean;
 }
 
 const SVG_WIDTH = 900;
@@ -18,6 +19,7 @@ function formatNumber(value: number): string {
 export default function SlopeVisualizer({
   params,
   result,
+  isCritical = false,
 }: SlopeVisualizerProps) {
   const { height, faceAngle } = params;
   const { center, crestEnd, faceRun, radius, slices, slipArc } = result;
@@ -53,6 +55,19 @@ export default function SlopeVisualizer({
     { x: crestEnd, y: 0 },
     { x: 0, y: 0 },
   ];
+  const slipColor = isCritical ? "#F43F5E" : "#F59E0B";
+  const failureEnvelope = isCritical
+    ? [
+        ...slipArc,
+        ...Array.from({ length: 33 }, (_, index) => {
+          const x =
+            slices[slices.length - 1].xEnd -
+            ((slices[slices.length - 1].xEnd - slices[0].xStart) * index) /
+              32;
+          return { x, y: x < faceRun ? (x / faceRun) * height : height };
+        }),
+      ]
+    : [];
   const gridLines = Array.from(
     { length: Math.floor((SVG_WIDTH - 1) / 32) },
     (_, index) => (index + 1) * 32,
@@ -79,8 +94,8 @@ export default function SlopeVisualizer({
             Ground profile
           </span>
           <span className="inline-flex items-center gap-2">
-            <span className="h-px w-4 bg-amber-500" />
-            Slip circle arc
+            <span className="h-px w-4" style={{ backgroundColor: slipColor }} />
+            {isCritical ? "Critical slip surface" : "Slip circle arc"}
           </span>
           <span className="inline-flex items-center gap-2">
             <span className="h-px w-4 border-t border-dashed border-cyan-300" />
@@ -118,6 +133,16 @@ export default function SlopeVisualizer({
           fill="#17212A"
           fillOpacity="0.84"
         />
+        {isCritical && (
+          <path
+            d={line(failureEnvelope) + " Z"}
+            fill="#E11D48"
+            fillOpacity="0.2"
+            stroke="#F43F5E"
+            strokeOpacity="0.55"
+            strokeWidth="1"
+          />
+        )}
         <g>
           {slices.map((slice) => (
             <path
@@ -128,9 +153,15 @@ export default function SlopeVisualizer({
                 { x: slice.xEnd, y: slice.baseEnd },
                 { x: slice.xStart, y: slice.baseStart },
               ]) + " Z"}
-              fill={slice.index % 2 === 0 ? "#0E7490" : "#9F1239"}
-              fillOpacity="0.13"
-              stroke={slice.index % 2 === 0 ? "#67E8F9" : "#FB7185"}
+              fill={
+                isCritical
+                  ? "#E11D48"
+                  : slice.index % 2 === 0
+                    ? "#0E7490"
+                    : "#9F1239"
+              }
+              fillOpacity={isCritical ? "0.2" : "0.13"}
+              stroke={isCritical ? "#FB7185" : slice.index % 2 === 0 ? "#67E8F9" : "#FB7185"}
               strokeDasharray="3 5"
               strokeOpacity="0.32"
               strokeWidth="1"
@@ -147,13 +178,13 @@ export default function SlopeVisualizer({
         <path
           d={line(slipArc)}
           fill="none"
-          stroke="#F59E0B"
+          stroke={slipColor}
           strokeLinecap="round"
           strokeWidth="3"
         />
         {showCenter && (
           <line
-            stroke="#F59E0B"
+            stroke={slipColor}
             strokeDasharray="4 5"
             strokeOpacity="0.55"
             strokeWidth="1"
@@ -178,11 +209,11 @@ export default function SlopeVisualizer({
               cy={yToSvg(center.y)}
               fill="#0B0E14"
               r="4"
-              stroke="#F59E0B"
+              stroke={slipColor}
               strokeWidth="1.5"
             />
             <line
-              stroke="#F59E0B"
+              stroke={slipColor}
               strokeWidth="1"
               x1={xToSvg(center.x) - 7}
               x2={xToSvg(center.x) + 7}
@@ -190,7 +221,7 @@ export default function SlopeVisualizer({
               y2={yToSvg(center.y)}
             />
             <line
-              stroke="#F59E0B"
+              stroke={slipColor}
               strokeWidth="1"
               x1={xToSvg(center.x)}
               x2={xToSvg(center.x)}
@@ -198,7 +229,7 @@ export default function SlopeVisualizer({
               y2={yToSvg(center.y) + 7}
             />
             <text
-              fill="#FBBF24"
+              fill={isCritical ? "#FDA4AF" : "#FBBF24"}
               fontSize="11"
               x={xToSvg(center.x) + 9}
               y={yToSvg(center.y) - 9}
@@ -237,7 +268,7 @@ export default function SlopeVisualizer({
           </text>
         </g>
         <text
-          fill="#FBBF24"
+          fill={isCritical ? "#FDA4AF" : "#FBBF24"}
           fontFamily="var(--font-geist-mono), monospace"
           fontSize="11"
           x={SVG_WIDTH - 18}
